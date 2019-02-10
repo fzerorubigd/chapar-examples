@@ -7,8 +7,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	red "github.com/gomodule/redigo/redis"
 
 	"github.com/fzerorubigd/chapar/drivers/redis"
+	"github.com/fzerorubigd/chapar/middlewares/storage"
 	"github.com/fzerorubigd/chapar/workers"
 )
 
@@ -37,12 +41,21 @@ func cliContext() context.Context {
 func main() {
 	ctx := cliContext()
 	flag.Parse()
-
+	pool := &red.Pool{
+		Dial: func() (red.Conn, error) {
+			return red.Dial("tcp", *redisServer)
+		},
+		TestOnBorrow: func(c red.Conn, _ time.Time) error {
+			_, err := c.Do("PING")
+			return err
+		},
+		MaxIdle: 1,
+	}
 	// Create the driver for queue
 	driver, err := redis.NewDriver(
 		ctx,
 		redis.WithQueuePrefix(*prefix),
-		redis.WithRedisOptions("tcp", *redisServer),
+		redis.WithRedisPool(pool),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -51,7 +64,10 @@ func main() {
 	// Create the manager
 	m := workers.NewManager(driver, driver)
 	// Register a global middleware
-	m.RegisterMiddleware(middleware("Global"))
+	m.RegisterMiddleware(
+		middleware("Global"),
+		storage.NewStorageMiddleware(&redisStorage{red: pool}),
+	)
 	// Register workers
 	err = m.RegisterWorker("dummy", dummyWorker{}, workers.WithMiddleware(middleware("DummyMiddle")))
 	if err != nil {
